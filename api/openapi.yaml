@@ -1,0 +1,314 @@
+openapi: 3.1.0
+info:
+  title: FFmpeg Command API
+  description: API for running FFmpeg commands asynchronously with reliable webhook delivery
+  version: 1.0.0
+
+servers:
+  - url: /
+    description: Current server
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: Check if the service is running
+      operationId: healthCheck
+      tags:
+        - health
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /v1/commands:
+    get:
+      summary: List all commands
+      description: Get a list of all FFmpeg commands with their current status
+      operationId: listCommands
+      tags:
+        - commands
+      responses:
+        '200':
+          description: List of commands
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandListResponse'
+
+    post:
+      summary: Create a new command
+      description: Submit a new FFmpeg command for asynchronous processing
+      operationId: createCommand
+      tags:
+        - commands
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommandRequest'
+      responses:
+        '202':
+          description: Command accepted for processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/commands/{id}:
+    get:
+      summary: Get command by ID
+      description: Get the status and results of a specific command
+      operationId: getCommand
+      tags:
+        - commands
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Command ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Command status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandStatus'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Command not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /openapi.json:
+    get:
+      summary: OpenAPI specification
+      description: Returns the OpenAPI 3.1 specification for this API
+      operationId: getOpenAPI
+      tags:
+        - docs
+      responses:
+        '200':
+          description: OpenAPI specification
+          content:
+            application/json:
+              schema:
+                type: object
+
+components:
+  schemas:
+    CommandRequest:
+      type: object
+      required:
+        - output_files
+      properties:
+        input_files:
+          type: object
+          additionalProperties:
+            type: string
+          description: Map of input file keys to URLs
+          example:
+            in_1: https://example.com/video.mp4
+        output_files:
+          type: object
+          additionalProperties:
+            type: string
+          description: Map of output file keys to filenames
+          example:
+            out_1: thumbnail.jpg
+        ffmpeg_command:
+          type: string
+          description: Single FFmpeg command with {{placeholders}} for inputs/outputs
+          example: "-i {{in_1}} -ss 00:00:05 -vframes 1 {{out_1}}"
+        ffmpeg_commands:
+          type: array
+          items:
+            type: string
+          description: Multiple FFmpeg commands to run in sequence
+        webhook:
+          type: string
+          format: uri
+          description: Webhook URL to POST results when complete
+        reference_id:
+          type: string
+          description: Your custom reference ID for tracking
+
+    CommandResponse:
+      type: object
+      required:
+        - command_id
+        - status
+      properties:
+        command_id:
+          type: string
+          description: Unique identifier for the command
+          example: f6bb88cb-83a9-4ea5-b763-078bff3431d4
+        status:
+          type: string
+          enum:
+            - PENDING
+            - PROCESSING
+            - SUCCESS
+            - FAILED
+            - RETRYING
+          description: Current status of the command
+          example: PENDING
+        reference_id:
+          type: string
+          description: Your custom reference ID if provided
+
+    CommandStatus:
+      type: object
+      required:
+        - command_id
+        - status
+        - created_at
+      properties:
+        command_id:
+          type: string
+          description: Unique identifier for the command
+          example: f6bb88cb-83a9-4ea5-b763-078bff3431d4
+        status:
+          type: string
+          enum:
+            - PENDING
+            - PROCESSING
+            - SUCCESS
+            - FAILED
+            - RETRYING
+          description: Current status of the command
+          example: SUCCESS
+        output_files:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/OutputFileInfo'
+          description: Map of output files with their metadata
+        original_request:
+          $ref: '#/components/schemas/CommandRequest'
+        ffmpeg_command_run_seconds:
+          type: number
+          format: double
+          description: Time spent running FFmpeg commands
+          example: 0.82
+        total_processing_seconds:
+          type: number
+          format: double
+          description: Total processing time including downloads
+          example: 5.87
+        error:
+          type: string
+          description: Error message if command failed
+        created_at:
+          type: string
+          format: date-time
+          description: When the command was created
+        completed_at:
+          type: string
+          format: date-time
+          description: When the command completed
+
+    CommandListResponse:
+      type: object
+      required:
+        - commands
+        - total
+      properties:
+        commands:
+          type: array
+          items:
+            $ref: '#/components/schemas/CommandStatus'
+          description: Array of commands
+        total:
+          type: integer
+          description: Total number of commands returned
+          example: 10
+
+    OutputFileInfo:
+      type: object
+      required:
+        - file_id
+        - size_mbytes
+        - file_type
+        - file_format
+        - storage_url
+      properties:
+        file_id:
+          type: string
+          description: Unique identifier for this output file
+          example: abc123_out_1
+        size_mbytes:
+          type: number
+          format: double
+          description: File size in megabytes
+          example: 0.085
+        file_type:
+          type: string
+          enum:
+            - image
+            - video
+            - audio
+            - subtitle
+            - file
+          description: Type of file
+          example: image
+        file_format:
+          type: string
+          description: File extension/format
+          example: jpg
+        storage_url:
+          type: string
+          description: URL or path to access the file
+          example: /output/abc123_thumbnail.jpg
+        width:
+          type: integer
+          description: Width in pixels (for images/videos)
+          example: 1920
+        height:
+          type: integer
+          description: Height in pixels (for images/videos)
+          example: 1080
+
+    HealthResponse:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          description: Status of the service
+          example: ok
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Error message
+          example: command not found

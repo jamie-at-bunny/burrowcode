@@ -1,0 +1,55 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  api:
+    build:
+      context: ./api
+    ports:
+      - "8080:8080"
+    environment:
+      - REDIS_ADDR=redis:6379
+      - PORT=8080
+      - TASK_MAX_RETRY=2
+      - TASK_TIMEOUT_MINUTES=30
+      - TASK_RETENTION_HOURS=24
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: ./worker
+    environment:
+      - REDIS_ADDR=redis:6379
+      - WORK_DIR=/tmp/ffmpeg-jobs
+      - OUTPUT_DIR=/output
+      - CONCURRENCY=2
+      - WEBHOOK_MAX_RETRY=5
+      - WEBHOOK_RETENTION_HOURS=72
+    volumes:
+      - ./output:/output
+    depends_on:
+      - redis
+
+  webhooks:
+    build:
+      context: ./webhooks
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_ADDR=redis:6379
+      - CONCURRENCY=10
+      - HTTP_TIMEOUT=10
+      - MAX_RETRY=5
+      - RETENTION_HOURS=72
+      - HEALTH_PORT=8081
+    depends_on:
+      - redis
+
+volumes:
+  redis-data:

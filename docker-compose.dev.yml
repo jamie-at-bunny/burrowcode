@@ -1,0 +1,63 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8080:8080"
+    environment:
+      - REDIS_ADDR=redis:6379
+      - PORT=8080
+      - TASK_MAX_RETRY=2
+      - TASK_TIMEOUT_MINUTES=30
+      - TASK_RETENTION_HOURS=24
+    volumes:
+      - ./api:/app
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile.dev
+    environment:
+      - REDIS_ADDR=redis:6379
+      - WORK_DIR=/tmp/ffmpeg-jobs
+      - OUTPUT_DIR=/output
+      - CONCURRENCY=2
+      - WEBHOOK_MAX_RETRY=5
+      - WEBHOOK_RETENTION_HOURS=72
+    volumes:
+      - ./worker:/app
+      - ./output:/output
+    depends_on:
+      - redis
+
+  webhooks:
+    build:
+      context: ./webhooks
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_ADDR=redis:6379
+      - CONCURRENCY=10
+      - HTTP_TIMEOUT=10
+      - MAX_RETRY=5
+      - RETENTION_HOURS=72
+      - HEALTH_PORT=8081
+    volumes:
+      - ./webhooks:/app
+    depends_on:
+      - redis
+
+volumes:
+  redis-data:

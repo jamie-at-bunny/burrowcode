@@ -1,0 +1,47 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build output
+bin/
+dist/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Dependency directories
+vendor/
+
+# Air temporary directories (hot-reload build artifacts)
+api/tmp/
+worker/tmp/
+webhooks/tmp/
+tmp/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment files (may contain secrets)
+.env
+.env.local
+.env.*.local
+
+# FFmpeg working directories (local development)
+/tmp/ffmpeg-jobs/
+/tmp/ffmpeg-output/

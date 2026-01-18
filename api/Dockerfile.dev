@@ -1,0 +1,11 @@
+FROM golang:1.25-alpine
+
+RUN go install github.com/air-verse/air@latest
+RUN go install github.com/ogen-go/ogen/cmd/ogen@v1.8.1
+
+WORKDIR /app
+
+COPY go.mod ./
+RUN go mod download
+
+CMD ["air", "-c", ".air.toml"]
