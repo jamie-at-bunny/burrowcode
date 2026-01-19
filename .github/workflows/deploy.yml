@@ -63,7 +63,7 @@ jobs:
         with:
           app_id: ${{ vars.APP_ID }}
           api_key: ${{ secrets.BUNNYNET_API_KEY }}
-          container: worker
+          container: worker1
           image_tag: ${{ github.sha }}
 
       - name: Update Webhooks container on Magic Containers
