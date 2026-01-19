@@ -1,4 +1,4 @@
-# FFmpeg Command API
+# FFmpeg Command API (Burrowcode)
 
 A distributed API for running FFmpeg commands asynchronously with reliable webhook delivery and pluggable storage adapters.
 
