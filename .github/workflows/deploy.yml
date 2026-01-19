@@ -41,6 +41,15 @@ jobs:
             ghcr.io/${{ github.repository }}-worker:latest
             ghcr.io/${{ github.repository }}-worker:${{ github.sha }}
 
+      - name: Build and push Webhooks image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./webhooks
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}-webhooks:latest
+            ghcr.io/${{ github.repository }}-webhooks:${{ github.sha }}
+
       - name: Update API container on Magic Containers
         uses: BunnyWay/actions/container-update-image@main
         with:
@@ -55,4 +64,12 @@ jobs:
           app_id: ${{ vars.APP_ID }}
           api_key: ${{ secrets.BUNNYNET_API_KEY }}
           container: worker
+          image_tag: ${{ github.sha }}
+
+      - name: Update Webhooks container on Magic Containers
+        uses: BunnyWay/actions/container-update-image@main
+        with:
+          app_id: ${{ vars.APP_ID }}
+          api_key: ${{ secrets.BUNNYNET_API_KEY }}
+          container: webhooks
           image_tag: ${{ github.sha }}
