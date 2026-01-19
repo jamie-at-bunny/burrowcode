@@ -1,6 +1,6 @@
 # FFmpeg Command API
 
-A distributed API for running FFmpeg commands asynchronously with reliable webhook delivery.
+A distributed API for running FFmpeg commands asynchronously with reliable webhook delivery and pluggable storage adapters.
 
 ## Architecture
 
@@ -8,10 +8,13 @@ A distributed API for running FFmpeg commands asynchronously with reliable webho
 flowchart LR
     API --> Redis
     Redis --> Worker
+    Worker --> Adapter{Storage Adapter}
+    Adapter --> FS[Local Filesystem]
+    Adapter --> BunnyStorage[Bunny Storage]
+    Adapter --> BunnyStream[Bunny Stream]
+    Adapter --> S3[AWS S3]
     Worker --> Webhooks
-    Worker --> Storage[Output Storage]
     Webhooks --> External[External Endpoint]
-    API --> Storage
 ```
 
 | Service      | Description                                                |
@@ -173,6 +176,60 @@ Use `{{key}}` syntax to reference input and output files:
 - `{{in_1}}` - References `input_files.in_1`
 - `{{out_1}}` - References `output_files.out_1`
 
+## Storage Adapters
+
+The worker supports multiple storage backends for output files. Set `STORAGE_ADAPTER` to choose:
+
+### File (default)
+
+Saves outputs to the local filesystem.
+
+| Variable           | Default              | Description            |
+| ------------------ | -------------------- | ---------------------- |
+| `STORAGE_ADAPTER`  | `file`               | Must be "file"         |
+| `OUTPUT_DIR`       | `/tmp/ffmpeg-output` | Local output directory |
+| `STORAGE_BASE_URL` | ``                   | Optional URL prefix    |
+
+### Bunny Storage
+
+Uploads to Bunny Edge Storage (CDN-backed object storage).
+
+| Variable                      | Default                | Description                        |
+| ----------------------------- | ---------------------- | ---------------------------------- |
+| `STORAGE_ADAPTER`             | -                      | Must be "bunny-storage"            |
+| `BUNNY_STORAGE_ZONE`          | -                      | Storage zone name (required)       |
+| `BUNNY_STORAGE_KEY`           | -                      | Storage zone access key (required) |
+| `BUNNY_STORAGE_ENDPOINT`      | `storage.bunnycdn.com` | Storage endpoint                   |
+| `BUNNY_STORAGE_PATH_PREFIX`   | ``                     | Optional path prefix               |
+| `BUNNY_STORAGE_PULL_ZONE_URL` | ``                     | CDN URL for public access          |
+
+### Bunny Stream
+
+Uploads videos to Bunny Stream (video hosting with transcoding).
+
+| Variable                  | Default | Description                  |
+| ------------------------- | ------- | ---------------------------- |
+| `STORAGE_ADAPTER`         | -       | Must be "bunny-stream"       |
+| `BUNNY_STREAM_LIBRARY_ID` | -       | Stream library ID (required) |
+| `BUNNY_STREAM_API_KEY`    | -       | Stream API key (required)    |
+
+Returns: Video GUID (for use with Bunny Stream player/CDN)
+
+### S3
+
+Uploads to AWS S3 or S3-compatible storage (MinIO, Cloudflare R2, etc.).
+
+| Variable          | Default     | Description                            |
+| ----------------- | ----------- | -------------------------------------- |
+| `STORAGE_ADAPTER` | -           | Must be "s3"                           |
+| `S3_BUCKET`       | -           | Bucket name (required)                 |
+| `S3_REGION`       | `us-east-1` | AWS region                             |
+| `S3_ENDPOINT`     | ``          | Custom endpoint (for S3-compatible)    |
+| `S3_ACCESS_KEY`   | -           | Access key ID (required)               |
+| `S3_SECRET_KEY`   | -           | Secret access key (required)           |
+| `S3_PATH_PREFIX`  | ``          | Optional path prefix                   |
+| `S3_PUBLIC_URL`   | ``          | Public URL base (if different from S3) |
+
 ## Environment Variables
 
 ### API Service
@@ -187,15 +244,16 @@ Use `{{key}}` syntax to reference input and output files:
 
 ### Worker Service
 
-| Variable                  | Default              | Description                         |
-| ------------------------- | -------------------- | ----------------------------------- |
-| `REDIS_ADDR`              | `localhost:6379`     | Redis server address                |
-| `WORK_DIR`                | `/tmp/ffmpeg-jobs`   | Temporary working directory         |
-| `OUTPUT_DIR`              | `/tmp/ffmpeg-output` | Final output directory              |
-| `STORAGE_BASE_URL`        | ``                   | Base URL for storage (optional)     |
-| `CONCURRENCY`             | `2`                  | Number of concurrent FFmpeg workers |
-| `WEBHOOK_MAX_RETRY`       | `5`                  | Max retries for webhook delivery    |
-| `WEBHOOK_RETENTION_HOURS` | `72`                 | Hours to retain webhook tasks       |
+| Variable                  | Default            | Description                                             |
+| ------------------------- | ------------------ | ------------------------------------------------------- |
+| `REDIS_ADDR`              | `localhost:6379`   | Redis server address                                    |
+| `WORK_DIR`                | `/tmp/ffmpeg-jobs` | Temporary working directory                             |
+| `CONCURRENCY`             | `2`                | Number of concurrent FFmpeg workers                     |
+| `STORAGE_ADAPTER`         | `file`             | Storage adapter (file, bunny-storage, bunny-stream, s3) |
+| `WEBHOOK_MAX_RETRY`       | `5`                | Max retries for webhook delivery                        |
+| `WEBHOOK_RETENTION_HOURS` | `72`               | Hours to retain webhook tasks                           |
+
+Plus adapter-specific variables (see Storage Adapters section above).
 
 ### Webhooks Service
 
@@ -242,12 +300,20 @@ Use `{{key}}` syntax to reference input and output files:
 ffmpeg-service/
 ├── api/                    # HTTP API service
 │   ├── main.go
+│   ├── openapi.yaml        # OpenAPI 3.1 specification
+│   ├── oas/                # Generated code (ogen)
 │   ├── go.mod
 │   ├── Dockerfile          # Production build
 │   ├── Dockerfile.dev      # Development with Air
 │   └── .air.toml           # Air config
 ├── worker/                 # FFmpeg processing worker
 │   ├── main.go
+│   ├── adapters/           # Storage adapters
+│   │   ├── adapter.go      # Interface + factory
+│   │   ├── file.go         # Local filesystem
+│   │   ├── bunny_storage.go# Bunny Edge Storage
+│   │   ├── bunny_stream.go # Bunny Stream
+│   │   └── s3.go           # S3/S3-compatible
 │   ├── go.mod
 │   ├── Dockerfile
 │   ├── Dockerfile.dev

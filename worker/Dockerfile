@@ -1,7 +1,9 @@
 FROM golang:1.25-alpine AS builder
 WORKDIR /app
-COPY go.mod main.go ./
-RUN go mod tidy && go build -o worker .
+COPY go.mod go.sum ./
+COPY main.go ./
+COPY adapters/ ./adapters/
+RUN go mod download && go build -o worker .
 
 FROM alpine:3.23
 RUN apk add --no-cache ffmpeg ca-certificates fontconfig ttf-dejavu

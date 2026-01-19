@@ -27,10 +27,33 @@ services:
     environment:
       - REDIS_ADDR=redis:6379
       - WORK_DIR=/tmp/ffmpeg-jobs
-      - OUTPUT_DIR=/output
       - CONCURRENCY=2
       - WEBHOOK_MAX_RETRY=5
       - WEBHOOK_RETENTION_HOURS=72
+      # Storage adapter (default: file)
+      - STORAGE_ADAPTER=file
+      - OUTPUT_DIR=/output
+      # - STORAGE_BASE_URL=https://cdn.example.com
+      # Bunny Storage (uncomment to use)
+      # - STORAGE_ADAPTER=bunny-storage
+      # - BUNNY_STORAGE_ZONE=my-zone
+      # - BUNNY_STORAGE_KEY=secret
+      # - BUNNY_STORAGE_ENDPOINT=storage.bunnycdn.com
+      # - BUNNY_STORAGE_PATH_PREFIX=outputs/
+      # - BUNNY_STORAGE_PULL_ZONE_URL=https://my-zone.b-cdn.net
+      # Bunny Stream (uncomment to use)
+      # - STORAGE_ADAPTER=bunny-stream
+      # - BUNNY_STREAM_LIBRARY_ID=12345
+      # - BUNNY_STREAM_API_KEY=secret
+      # S3 (uncomment to use)
+      # - STORAGE_ADAPTER=s3
+      # - S3_BUCKET=my-bucket
+      # - S3_REGION=us-east-1
+      # - S3_ACCESS_KEY=xxx
+      # - S3_SECRET_KEY=xxx
+      # - S3_ENDPOINT=https://s3.example.com
+      # - S3_PATH_PREFIX=outputs/
+      # - S3_PUBLIC_URL=https://cdn.example.com
     volumes:
       - ./output:/output
     depends_on:

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"ffmpeg-worker/adapters"
+
 	"github.com/hibiken/asynq"
 )
 
@@ -57,8 +59,7 @@ type WebhookPayload struct {
 
 var (
 	workDir             string
-	outputDir           string
-	storageBase         string
+	storageAdapter      adapters.OutputAdapter
 	webhookClient       *asynq.Client
 	webhookMaxRetry     int
 	webhookRetentionHrs int
@@ -66,12 +67,17 @@ var (
 
 func main() {
 	workDir = getEnv("WORK_DIR", "/tmp/ffmpeg-jobs")
-	outputDir = getEnv("OUTPUT_DIR", "/tmp/ffmpeg-output")
-	storageBase = getEnv("STORAGE_BASE_URL", "")
 	webhookMaxRetry = getEnvInt("WEBHOOK_MAX_RETRY", 5)
 	webhookRetentionHrs = getEnvInt("WEBHOOK_RETENTION_HOURS", 72)
 	os.MkdirAll(workDir, 0755)
-	os.MkdirAll(outputDir, 0755)
+
+	// Initialize storage adapter
+	var err error
+	storageAdapter, err = adapters.NewAdapter()
+	if err != nil {
+		log.Fatalf("Failed to initialize storage adapter: %v", err)
+	}
+	log.Printf("Storage adapter: %s", storageAdapter.Name())
 
 	redisAddr := getEnv("REDIS_ADDR", "localhost:6379")
 	concurrency := getEnvInt("CONCURRENCY", 2)
@@ -188,7 +194,7 @@ func handleFFmpegCommand(ctx context.Context, t *asynq.Task) error {
 		return fmt.Errorf("command cancelled")
 	}
 
-	// Process outputs
+	// Process and upload outputs
 	outputFiles := make(map[string]OutputFileInfo)
 	for key, localPath := range outputPaths {
 		stat, err := os.Stat(localPath)
@@ -197,9 +203,12 @@ func handleFFmpegCommand(ctx context.Context, t *asynq.Task) error {
 		}
 
 		filename := req.OutputFiles[key]
-		finalPath := filepath.Join(outputDir, commandID+"_"+filename)
-		if err := copyFile(localPath, finalPath); err != nil {
-			return fmt.Errorf("copy output %s: %w", key, err)
+		destPath := commandID + "_" + filename
+
+		// Upload to storage adapter
+		storageURL, err := storageAdapter.Upload(ctx, localPath, destPath)
+		if err != nil {
+			return fmt.Errorf("upload output %s: %w", key, err)
 		}
 
 		ext := strings.TrimPrefix(filepath.Ext(filename), ".")
@@ -210,23 +219,18 @@ func handleFFmpegCommand(ctx context.Context, t *asynq.Task) error {
 			SizeMBytes: float64(stat.Size()) / (1024 * 1024),
 			FileType:   fileType,
 			FileFormat: ext,
-			StorageURL: finalPath,
+			StorageURL: storageURL,
 		}
 
-		// Set storage URL if base is configured
-		if storageBase != "" {
-			info.StorageURL = storageBase + "/" + commandID + "_" + filename
-		}
-
-		// Get dimensions for video/image
+		// Get dimensions for video/image (from local file before cleanup)
 		if fileType == "video" || fileType == "image" {
-			w, h := getMediaDimensions(finalPath)
+			w, h := getMediaDimensions(localPath)
 			info.Width = w
 			info.Height = h
 		}
 
 		outputFiles[key] = info
-		log.Printf("[%s] Output %s: %s (%.2f MB)", commandID, key, finalPath, info.SizeMBytes)
+		log.Printf("[%s] Output %s: %s (%.2f MB)", commandID, key, storageURL, info.SizeMBytes)
 	}
 
 	totalDuration := time.Since(startTime).Seconds()
@@ -391,22 +395,5 @@ func downloadFile(ctx context.Context, url, destPath string) error {
 	defer f.Close()
 
 	_, err = io.Copy(f, resp.Body)
-	return err
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	_, err = io.Copy(out, in)
 	return err
 }
