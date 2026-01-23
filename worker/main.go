@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"ffmpeg-worker/adapters"
+	"ffmpeg-worker/config"
+	"ffmpeg-worker/system"
 
 	"github.com/hibiken/asynq"
 )
@@ -48,6 +50,7 @@ type CommandResult struct {
 	FFmpegCommandRunSeconds float64                   `json:"ffmpeg_command_run_seconds"`
 	TotalProcessingSeconds  float64                   `json:"total_processing_seconds"`
 	CompletedAt             time.Time                 `json:"completed_at"`
+	HardwareAcceleration    string                    `json:"hardware_acceleration,omitempty"`
 }
 
 type WebhookPayload struct {
@@ -58,18 +61,33 @@ type WebhookPayload struct {
 }
 
 var (
-	workDir             string
-	storageAdapter      adapters.OutputAdapter
-	webhookClient       *asynq.Client
-	webhookMaxRetry     int
-	webhookRetentionHrs int
+	cfg            *config.Config
+	storageAdapter adapters.OutputAdapter
+	webhookClient  *asynq.Client
+	hwCapabilities system.HardwareCapabilities
 )
 
 func main() {
-	workDir = getEnv("WORK_DIR", "/tmp/ffmpeg-jobs")
-	webhookMaxRetry = getEnvInt("WEBHOOK_MAX_RETRY", 5)
-	webhookRetentionHrs = getEnvInt("WEBHOOK_RETENTION_HOURS", 72)
-	os.MkdirAll(workDir, 0755)
+	// Load configuration
+	cfg = config.Load()
+	os.MkdirAll(cfg.Worker.WorkDir, 0755)
+
+	// Detect hardware acceleration capabilities
+	hwCapabilities = system.DetectHardwareAcceleration()
+	log.Printf("Hardware acceleration: %s (H.264: %s, HEVC: %s)",
+		hwCapabilities.AccelType,
+		hwCapabilities.H264Encoder,
+		hwCapabilities.HEVCEncoder,
+	)
+
+	// Log resource monitoring status
+	if cfg.Resources.Enabled {
+		status := system.GetResourceStatus()
+		log.Printf("Resource monitoring enabled (max memory: %.1f%%, current: %.1f%%)",
+			cfg.Resources.MaxMemoryPercent,
+			status.MemoryUsagePercent,
+		)
+	}
 
 	// Initialize storage adapter
 	var err error
@@ -79,54 +97,52 @@ func main() {
 	}
 	log.Printf("Storage adapter: %s", storageAdapter.Name())
 
-	redisAddr := getEnv("REDIS_ADDR", "localhost:6379")
-	concurrency := getEnvInt("CONCURRENCY", 2)
-
 	// Create asynq client for enqueueing webhook tasks
-	webhookClient = asynq.NewClient(asynq.RedisClientOpt{Addr: redisAddr})
+	webhookClient = asynq.NewClient(asynq.RedisClientOpt{Addr: cfg.Redis.Addr})
 	defer webhookClient.Close()
 
 	srv := asynq.NewServer(
-		asynq.RedisClientOpt{Addr: redisAddr},
+		asynq.RedisClientOpt{Addr: cfg.Redis.Addr},
 		asynq.Config{
-			Concurrency: concurrency,
+			Concurrency: cfg.Worker.Concurrency,
 			Queues:      map[string]int{"ffmpeg": 1},
+			// Add resource check before processing each task
+			IsFailure: func(err error) bool {
+				// Resource exhaustion errors should be retried
+				if strings.Contains(err.Error(), "resource limit") {
+					return false // Will be retried
+				}
+				return true
+			},
 		},
 	)
 
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(TypeFFmpegCommand, handleFFmpegCommand)
 
-	log.Printf("FFmpeg Command Worker started (concurrency=%d)", concurrency)
+	log.Printf("FFmpeg Command Worker started (concurrency=%d)", cfg.Worker.Concurrency)
 	if err := srv.Run(mux); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func getEnv(k, d string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return d
-}
-
-func getEnvInt(key string, defaultVal int) int {
-	if val := os.Getenv(key); val != "" {
-		if intVal, err := strconv.Atoi(val); err == nil {
-			return intVal
+func handleFFmpegCommand(ctx context.Context, t *asynq.Task) error {
+	// Check resource availability before processing
+	if cfg.Resources.Enabled {
+		if ok, reason := system.CheckResourcesAvailable(cfg.GetResourceLimits()); !ok {
+			log.Printf("[%s] Delaying due to resource limit: %s", t.ResultWriter().TaskID(), reason)
+			// Return error to trigger retry with backoff
+			return fmt.Errorf("resource limit: %s", reason)
 		}
 	}
-	return defaultVal
-}
 
-func handleFFmpegCommand(ctx context.Context, t *asynq.Task) error {
 	var req CommandRequest
 	if err := json.Unmarshal(t.Payload(), &req); err != nil {
 		return fmt.Errorf("unmarshal: %w", err)
 	}
 
 	commandID := t.ResultWriter().TaskID()
-	jobDir := filepath.Join(workDir, commandID)
+	jobDir := filepath.Join(cfg.Worker.WorkDir, commandID)
 	os.MkdirAll(jobDir, 0755)
 	defer os.RemoveAll(jobDir)
 
@@ -167,6 +183,15 @@ func handleFFmpegCommand(ctx context.Context, t *asynq.Task) error {
 		commands = []string{req.FFmpegCommand}
 	}
 
+	// Try to get duration of first input for progress tracking
+	var inputDurationMS int64
+	for _, path := range inputPaths {
+		if dur, err := system.GetMediaDuration(path); err == nil && dur > 0 {
+			inputDurationMS = dur
+			break
+		}
+	}
+
 	// Execute each command
 	ffmpegStart := time.Now()
 	for i, cmd := range commands {
@@ -179,8 +204,26 @@ func handleFFmpegCommand(ctx context.Context, t *asynq.Task) error {
 		args := parseCommandArgs(expandedCmd)
 		args = append([]string{"-y"}, args...) // Always overwrite
 
-		execCmd := exec.CommandContext(ctx, "ffmpeg", args...)
-		output, err := execCmd.CombinedOutput()
+		// Execute with progress tracking if we have duration info
+		var output []byte
+		var err error
+
+		if inputDurationMS > 0 {
+			runner := &system.FFmpegRunner{
+				DurationMS: inputDurationMS,
+				OnProgress: func(p system.FFmpegProgress) {
+					if p.PercentDone > 0 {
+						log.Printf("[%s] Progress: %.1f%% (speed: %s)", commandID, p.PercentDone, p.Speed)
+					}
+				},
+			}
+			output, err = runner.Run(ctx, args)
+		} else {
+			// Fallback to standard execution
+			execCmd := exec.CommandContext(ctx, "ffmpeg", args...)
+			output, err = execCmd.CombinedOutput()
+		}
+
 		if err != nil {
 			if ctx.Err() != nil {
 				return fmt.Errorf("command cancelled during encoding")
@@ -240,6 +283,7 @@ func handleFFmpegCommand(ctx context.Context, t *asynq.Task) error {
 		FFmpegCommandRunSeconds: ffmpegDuration,
 		TotalProcessingSeconds:  totalDuration,
 		CompletedAt:             time.Now(),
+		HardwareAcceleration:    string(hwCapabilities.AccelType),
 	}
 
 	if req.Webhook != "" {
@@ -249,7 +293,7 @@ func handleFFmpegCommand(ctx context.Context, t *asynq.Task) error {
 	resultBytes, _ := json.Marshal(result)
 	t.ResultWriter().Write(resultBytes)
 
-	log.Printf("[%s] Completed in %.2fs (ffmpeg: %.2fs)", commandID, totalDuration, ffmpegDuration)
+	log.Printf("[%s] Completed in %.2fs (ffmpeg: %.2fs, hw: %s)", commandID, totalDuration, ffmpegDuration, hwCapabilities.AccelType)
 	return nil
 }
 
@@ -261,6 +305,7 @@ func enqueueWebhook(url, commandID string, result *CommandResult, req *CommandRe
 		"original_request":           req,
 		"ffmpeg_command_run_seconds": result.FFmpegCommandRunSeconds,
 		"total_processing_seconds":   result.TotalProcessingSeconds,
+		"hardware_acceleration":      result.HardwareAcceleration,
 	}
 
 	payload := WebhookPayload{
@@ -278,9 +323,9 @@ func enqueueWebhook(url, commandID string, result *CommandResult, req *CommandRe
 
 	task := asynq.NewTask(TypeWebhookDeliver, payloadBytes)
 	info, err := webhookClient.Enqueue(task,
-		asynq.MaxRetry(webhookMaxRetry),
+		asynq.MaxRetry(cfg.Webhook.MaxRetry),
 		asynq.Queue("webhooks"),
-		asynq.Retention(time.Duration(webhookRetentionHrs)*time.Hour),
+		asynq.Retention(time.Duration(cfg.Webhook.RetentionHours)*time.Hour),
 	)
 	if err != nil {
 		log.Printf("[%s] Failed to enqueue webhook: %v", commandID, err)

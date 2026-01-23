@@ -136,7 +136,8 @@ Webhook payload (delivered with retries):
   "output_files": { ... },
   "original_request": { ... },
   "ffmpeg_command_run_seconds": 0.82,
-  "total_processing_seconds": 5.87
+  "total_processing_seconds": 5.87,
+  "hardware_acceleration": "videotoolbox"
 }
 ```
 
@@ -252,6 +253,8 @@ Uploads to AWS S3 or S3-compatible storage (MinIO, Cloudflare R2, etc.).
 | `STORAGE_ADAPTER`         | `file`             | Storage adapter (file, bunny-storage, bunny-stream, s3) |
 | `WEBHOOK_MAX_RETRY`       | `5`                | Max retries for webhook delivery                        |
 | `WEBHOOK_RETENTION_HOURS` | `72`               | Hours to retain webhook tasks                           |
+| `RESOURCE_CHECK_ENABLED`  | `true`             | Enable memory monitoring before job pickup              |
+| `MAX_MEMORY_PERCENT`      | `85`               | Maximum memory usage % before delaying jobs             |
 
 Plus adapter-specific variables (see Storage Adapters section above).
 
@@ -314,6 +317,12 @@ ffmpeg-service/
 │   │   ├── bunny_storage.go# Bunny Edge Storage
 │   │   ├── bunny_stream.go # Bunny Stream
 │   │   └── s3.go           # S3/S3-compatible
+│   ├── config/             # Configuration management
+│   │   └── config.go       # Typed config with env loading
+│   ├── system/             # System utilities
+│   │   ├── hardware.go     # Hardware acceleration detection
+│   │   ├── progress.go     # FFmpeg progress tracking
+│   │   └── resources.go    # Memory monitoring
 │   ├── go.mod
 │   ├── Dockerfile
 │   ├── Dockerfile.dev
@@ -335,6 +344,42 @@ ffmpeg-service/
 | ---------------- | ------------------------------------------------------------------------- |
 | `Dockerfile`     | Production - multi-stage build, minimal Alpine image with compiled binary |
 | `Dockerfile.dev` | Development - Go toolchain + Air for hot-reload, source mounted as volume |
+
+## Worker Features
+
+### Hardware Acceleration Detection
+
+The worker automatically detects available hardware encoders at startup and logs the detected capabilities. Supported acceleration types:
+
+| Type           | Platform      | Description                         |
+| -------------- | ------------- | ----------------------------------- |
+| `nvenc`        | Linux/Windows | NVIDIA GPU encoding                 |
+| `qsv`          | Linux/Windows | Intel Quick Sync Video              |
+| `amf`          | Linux/Windows | AMD Advanced Media Framework        |
+| `vaapi`        | Linux         | Video Acceleration API              |
+| `videotoolbox` | macOS         | Apple VideoToolbox                  |
+| `none`         | All           | Software encoding (libx264/libx265) |
+
+The detected acceleration type is included in webhook payloads via the `hardware_acceleration` field.
+
+### Resource Monitoring
+
+The worker monitors system memory before accepting new jobs to prevent out-of-memory crashes during heavy encoding workloads:
+
+- When memory usage exceeds `MAX_MEMORY_PERCENT` (default: 85%), new jobs are delayed with automatic retry backoff
+- This is especially useful when running multiple concurrent workers on memory-constrained systems
+- Disable with `RESOURCE_CHECK_ENABLED=false` if not needed
+
+### Progress Tracking
+
+For jobs with detectable input duration, the worker logs encoding progress:
+
+```
+[command-id] Progress: 45.2% (speed: 2.3x)
+[command-id] Progress: 78.6% (speed: 2.1x)
+```
+
+This uses FFmpeg's `-progress` output to track `out_time` against the input duration.
 
 ## Webhook Reliability
 

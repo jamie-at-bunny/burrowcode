@@ -30,6 +30,9 @@ services:
       - CONCURRENCY=2
       - WEBHOOK_MAX_RETRY=5
       - WEBHOOK_RETENTION_HOURS=72
+      # Resource monitoring (prevents OOM by delaying jobs when memory is high)
+      - RESOURCE_CHECK_ENABLED=true
+      - MAX_MEMORY_PERCENT=85
       # Storage adapter (default: file)
       - STORAGE_ADAPTER=file
       - OUTPUT_DIR=/output
